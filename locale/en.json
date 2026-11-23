@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Team janitor",
+    "description": "Team collaboration QoL: the agent can close subagents it is done with — single close, idle sweep, and a compact team overview.",
+    "detail": "docs/DETAIL.md"
+  }
+}

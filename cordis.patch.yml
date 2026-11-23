@@ -1,0 +1,11 @@
+# dsh-team-janitor — Host plugin registration for DeepSeek Harness.
+# One Host plugin row; per-row config lives in the patch layer and survives upgrades.
+#
+#   - insert:
+#       - id: team-janitor
+#         name: 'dsh-team-janitor'
+#         config: {}
+- insert:
+    - id: team-janitor
+      name: 'dsh-team-janitor'
+      config: {}
