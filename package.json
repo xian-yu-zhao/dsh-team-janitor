@@ -1,49 +1,49 @@
-{
-  "name": "dsh-team-janitor",
-  "version": "1.1.0",
-  "type": "module",
-  "description": "Team collaboration QoL for DeepSeek Harness: let the agent decide to close subagents it is done with (single close, idle sweep, compact team overview, restore).",
-  "author": "xian-yu-zhao",
-  "license": "MIT",
-  "homepage": "https://github.com/xian-yu-zhao/dsh-team-janitor#readme",
-  "bugs": {
-    "url": "https://github.com/xian-yu-zhao/dsh-team-janitor/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/xian-yu-zhao/dsh-team-janitor.git"
-  },
-  "keywords": [
-    "deepseek-harness",
-    "dsh",
-    "cordis",
-    "subagent",
-    "agent-teams",
-    "agent-tool",
-    "lifecycle"
-  ],
-  "exports": {
-    ".": "./lib/index.js",
-    "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "lib/",
-    "locale/",
-    "docs/",
-    "icon.svg",
-    "README.md",
-    "LICENSE",
-    "cordis.patch.yml",
-    "package.json"
-  ],
-  "engines": {
-    "node": ">=20"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  }
+﻿{
+    "name":  "dsh-team-janitor",
+    "version":  "1.1.1",
+    "type":  "module",
+    "description":  "Team collaboration QoL for DeepSeek Harness: let the agent decide to close subagents it is done with (single close, idle sweep, compact team overview, restore).",
+    "author":  "xian-yu-zhao",
+    "license":  "MIT",
+    "homepage":  "https://github.com/xian-yu-zhao/dsh-team-janitor#readme",
+    "bugs":  {
+                 "url":  "https://github.com/xian-yu-zhao/dsh-team-janitor/issues"
+             },
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/xian-yu-zhao/dsh-team-janitor.git"
+                   },
+    "keywords":  [
+                     "deepseek-harness",
+                     "dsh",
+                     "cordis",
+                     "subagent",
+                     "agent-teams",
+                     "agent-tool",
+                     "lifecycle"
+                 ],
+    "exports":  {
+                    ".":  "./lib/index.js",
+                    "./locale/*.json":  "./locale/*.json",
+                    "./icon":  "./icon.svg",
+                    "./package.json":  "./package.json"
+                },
+    "files":  [
+                  "lib/",
+                  "locale/",
+                  "docs/",
+                  "icon.svg",
+                  "README.md",
+                  "LICENSE",
+                  "cordis.patch.yml",
+                  "package.json"
+              ],
+    "engines":  {
+                    "node":  "\u003e=20"
+                },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            }
 }
