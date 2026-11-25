@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Team janitor",
-    "description": "Team collaboration QoL: the agent can close subagents it is done with — single close, idle sweep, and a compact team overview.",
+    "description": "Team collaboration QoL: the agent can close subagents it is done with — single close, idle sweep, compact team overview, reversible restore, and a per-conversation red 'cleared' marker in the Web subagent menu.",
     "detail": "docs/DETAIL.md"
   }
 }

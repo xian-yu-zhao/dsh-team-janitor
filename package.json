@@ -1,8 +1,8 @@
 {
   "name": "dsh-team-janitor",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "type": "module",
-  "description": "Team collaboration QoL for DeepSeek Harness: let the agent decide to close subagents it is done with (single close, idle sweep, compact team overview, restore).",
+  "description": "Team collaboration QoL for DeepSeek Harness: the agent can close subagents it is done with — model-facing close/sweep/overview/restore tools, reversible archiving, subtree-scoped, last-words roster, and a per-conversation red 'cleared' marker in the Web subagent menu.",
   "author": "xian-yu-zhao",
   "license": "MIT",
   "homepage": "https://github.com/xian-yu-zhao/dsh-team-janitor#readme",
@@ -24,12 +24,14 @@
   ],
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/",
+    "client.js",
     "locale/",
     "docs/",
     "icon.svg",
@@ -44,6 +46,16 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-subagent"
+      ]
     }
   }
 }
