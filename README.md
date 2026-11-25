@@ -2,6 +2,8 @@
 
 Team collaboration QoL for DeepSeek Harness (DSH): the agent can decide to close subagents whose work is done — single close, idle sweep, compact team overview, and restore — and the Web UI marks cleared members in red.
 
+> ⭐ **Star 一下，让我假装自己是个有影响力的开源作者。** — 一个 star 就是作者今天的好心情，右上角点一下只需两秒。
+
 ## Why
 
 Subagent trees grow cluttered: finished children stay in `list_agents` forever and their sessions pile up in the workspace sidebar. A subagent that finishes normally settles by itself and frees its activation slot (`maxActiveSubagents`) — no plugin is needed for capacity. What DSH lacks is a **model-facing way to close a member for good**: archive it, see it as `closed`, and reopen it if needed. This plugin fills that gap — model-side archiving, sidebar hygiene, a visible `closed` status, and reversible restore.
@@ -83,6 +85,8 @@ Closing never deletes history; archived sessions stay recoverable. Closing frees
 优势：**模型工具**（四个工具由智能体自主调用）、**可逆归档**（只归档不删除，`team_restore` 随时反悔，带 `prompt` 可恢复并继续）、**状态总览**（`closed`/`running`/`parked`/`settled` 四态）、**零侵入**（无 `@deepseek-ai` 依赖、不改宿主日志、不自建闸门）、**子树限定**（只作用于调用者自己的后代）、**last words**（缓存成员收尾发言辅助判断）、**已清除标记**（网页端子代理菜单下方红色徽章，按对话独立）。
 
 四个工具（`team_overview` / `team_close` / `team_sweep` / `team_restore`）只作用于调用者自己的子树：关闭 = 停止运行 + 会话归档（从侧栏消失）。唤醒拦截由 DSH 内置闸门完成：44.7.0 起内置闸门已覆盖「自身已归档」与「祖先已归档」，插件不再自建闸门。正常完成的子代理会自动结算并释放槽位，无需插件；若空闲成员的 inbox 里还停放着输入，归档后槽位可能仍被占用（DSH 没有公开的 dispose/清空 inbox API）。`team_overview` 用 `parked`（仍驻留可能占槽）/`settled`（已结算已释放）区分空闲成员；`team_close` 归档后短轮询、如实回报是否结算。关闭不删历史、不释放名字。详见 `docs/DETAIL.md`。
+
+> ⭐ **觉得好用就 Star 一下，让我假装自己是个有影响力的开源作者。**
 
 ## Changelog
 
