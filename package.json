@@ -1,6 +1,6 @@
 {
   "name": "dsh-team-janitor",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "type": "module",
   "description": "Team collaboration QoL for DeepSeek Harness: the agent can close subagents it is done with — model-facing close/sweep/overview/restore tools, reversible archiving, subtree-scoped, last-words roster, and a per-conversation red 'cleared' marker in the Web subagent menu.",
   "author": "xian-yu-zhao",
@@ -36,10 +36,16 @@
     "docs/",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "cordis.patch.yml",
     "package.json"
   ],
+  "scripts": {
+    "check": "node --check lib/index.js && node --check client.js",
+    "test": "node test/smoke.mjs",
+    "verify": "npm run check && npm test"
+  },
   "engines": {
     "node": ">=20"
   },

@@ -4,10 +4,10 @@
 
 | 工具 | 作用 |
 |---|---|
-| `team_overview` | 紧凑花名册：每个成员标 `closed`（已归档）/ `running` / `parked`（在注册表中但无运行回合，可能仍占槽）/ `settled`（已出注册表，槽位已释放），附最近收尾发言与 `closable now` 列表（parked 优先，settled 其后） |
-| `team_close` | 关闭指定后代（名字或 session id）：停止其运行中的工作（含其运行中的后代），归档会话并从侧边栏消失，随后短轮询确认是否真的结算（回报 `settled, slot released` 或 `still resident`） |
-| `team_sweep` | 批量关闭闲置后代；默认 `preview=true` 只列候选，`preview=false` 才执行；`includeRunning=true` 连运行中的也关；失败逐条记入 `failuresDetail` |
-| `team_restore` | 取消归档恢复可见与可继续对话；可选 `prompt` 在恢复后立即投递消息（恢复并继续，目标重新占槽），不带 `prompt` 则只恢复可见性、不启动回合 |
+| `team_overview` | 紧凑花名册：每个成员标 `closed`（已归档）/ `running` / `parked`（在注册表中但无运行回合，可能仍占槽）/ `settled`（已出注册表，槽位已释放），附最近收尾发言（`lastWords:false` 可关掉）与 `closable` 列表（只含调用者自己可关的后代，parked 优先，settled 其后） |
+| `team_close` | 关闭指定后代（名字或 session id）：请求停止其运行中的工作、归档会话使其从侧边栏消失，整批只做一次结算轮询，逐条回报 `settled`（已释放槽位）/ `still resident`（可能仍占槽）/ `cancelled`（调用被取消、无法观测） |
+| `team_sweep` | 批量关闭闲置后代；默认 `preview=true` 只列候选，`preview=false` 才执行；`includeRunning=true` 连运行中的也关；失败逐条记入 `failuresDetail`，结算以 `settled` / `resident` / `unobserved` 计数回报 |
+| `team_restore` | 取消归档恢复可见与可继续对话；可选 `prompt` 在恢复后立即投递消息（恢复并继续，冷目标会重新占槽），不带 `prompt` 则只恢复可见性、不启动回合；不能恢复自己，一次性子代理不接受 `prompt` |
 
 ## 特点
 
@@ -39,9 +39,11 @@
 3. 归档的会话从工作区侧边栏消失；`team_restore`（或用户在界面取消归档）可恢复；
 4. 后续模型步由 DSH 内置闸门拦截：DSH 44.7.0 起会话控制器会拒绝「自身会话已归档」成员的新模型步，子代理运行时的归档准入还会检查托管祖先——唤醒拦截由内置机制完成，插件不再自建闸门；
 5. 容量：正常完成的子代理由管理器自动结算并释放槽位，无需插件；归档改变的是活动与可见性，不改变结算保证——空闲成员的 inbox 若还停放着输入，归档后可能仍驻留占槽（DSH 没有公开的 dispose 或清空 inbox 的 API）；
-6. `team_close` 的结算确认：归档后短轮询 agents 注册表（约 2 秒、200ms 步长、尊重取消）——目标离开注册表则回报 `settled, slot released`，超时仍在则回报 `still resident — slot may be retained (parked inbox input)`；`team_restore` 让成员重新驻留并重新占槽，带 `prompt` 时恢复后立即投递消息（投递失败不回滚恢复，只在 detail 中如实说明）。
+6. `team_close` 的结算确认：整批归档后**只做一次**轮询（约 2 秒预算、200ms 步长、尊重取消）——目标离开注册表则回报 `settled, slot released`，超时仍在则回报 `still resident — slot may be retained (parked inbox input)`，调用被取消则如实回报 `settlement not observed (call cancelled)`；`team_sweep` 以 `settled` / `resident` / `unobserved` 计数回报。`team_restore` 让成员重新驻留并重新占槽，带 `prompt` 时恢复后立即投递（投递失败不回滚恢复，只在 detail 中如实说明）。
 
-关闭**不会删除历史**；归档可逆。`team_overview` 会把归档成员标为 `closed`，并展示成员最近一次收尾发言（来自 `subagent/end` 事件缓存），方便判断「是否真的用完了」。
+关闭**不会删除历史**；归档可逆。`team_overview` 会把归档成员标为 `closed`，并展示成员最近一次收尾发言（来自 `subagent/end` 事件缓存，LRU 上限 256 条、恢复时清空），方便判断「是否真的用完了」。
+
+归档集合（`archivedSessionIds`）是**profile 全局**的：`team_overview` 回答的是「这个会话在本 profile 里是否已归档」，不是「本对话里是否已归档」；界面里手动取消归档、或另一个对话调用 `team_restore`，都会让 `closed` 在宿主视图里全局消失。按对话独立的是网页端标记（见下）。
 
 ## Web 界面的「已清除」标记
 
@@ -58,4 +60,18 @@
 - `list_agents` 基于父会话日志里的 catalog 条目，条目是永久的：已关闭的成员可能仍以 `inactive` 出现在其中。判断「谁已关闭」请用 `team_overview`。
 - 关闭不释放名字：名字在创建者的子代理目录里仍然占用（Harness 规则）。
 - 归档不强制释放容量：空闲成员若 inbox 里有停放输入，`team_close`/`team_sweep` 之后可能仍驻留占槽。
-- 需要宿主组合里有 `subagents` 与 `tools` 服务；`workspaceRegistry` 缺失时插件自动闲置并在日志提示。
+- 需要宿主组合里有 `subagents`（含 `rootOf`/`listDescendants`/`resolveName`）与 `tools`；`workspaceRegistry` 缺失时插件照常加载，但三个关闭/恢复工具会返回明确的「服务不可用」错误、不碰任何会话。
+- `agents` 缺失时无法区分 `parked`/`settled`，也无法观测结算（一律按 parked 处理并如实说明）；`systemPrompt` 缺失时只是没有卫生提示。
+- `team_sweep` 的子树判定严格排除调用者自身与树根——早期版本把 owner 算进了子树，可能误关自己（1.1.5 修复）。
+
+## 自检
+
+仓库自带零依赖自检，不需要装 DSH：
+
+```sh
+npm run check   # 两个半球做语法检查
+npm test        # 104 项断言，跑在假的 Cordis context 上
+npm run verify  # 两者都跑
+```
+
+`test/smoke.mjs` 覆盖：工具注册、四态判定、`closable` 范围（不含旁支与调用者）、结算结论（settled / still resident / cancelled）、重复引用去重、拒绝路径（自身、树根、旁支、未知名字、一次性子代理带 prompt）、恢复并继续，以及打包不变量（无 `@deepseek-ai` 导入、bundle 与网页半身清单、发布文件集）。CI 在 Node 20 / 22 上跑同一套。

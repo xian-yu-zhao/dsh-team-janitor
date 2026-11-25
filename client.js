@@ -89,7 +89,7 @@ window.__ModuleLoader__.load({
           if (!seen.has(entry.id)) {
             seen.add(entry.id)
             if (archived.has(entry.id)) {
-              out.push({ id: entry.id, name: entry.label || entry.name || entry.id })
+              out.push({ id: entry.id, name: entry.label || entry.path || entry.name || entry.id })
             }
           }
           /* Descend only when that child's own catalog is loaded, so deeper
@@ -120,7 +120,7 @@ window.__ModuleLoader__.load({
       if (cleared.length === 0) return null
       return h(
         'section',
-        { style: styles.section, 'data-team-janitor-cleared': true, 'aria-label': t('cleared.title') },
+        { style: styles.section, 'data-team-janitor-cleared': true, role: 'group', 'aria-label': t('cleared.title') },
         h(
           'h3',
           { style: styles.header },
