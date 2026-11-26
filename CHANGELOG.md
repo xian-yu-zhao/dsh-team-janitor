@@ -1,6 +1,28 @@
 # Changelog
 
-All notable changes to `dsh-team-janitor`. Tool names and required parameters have never changed across releases.
+All notable changes to `dsh-team-janitor`. 2.0.0 is the first release that changes the tool surface: `team_sweep` is gone.
+
+## 2.0.0 — results instead of residency (breaking)
+
+### Removed
+
+- **`team_sweep` is gone.** It duplicated `team_close` and its "preview, then execute" round-trip cost an extra model turn. Migration: replace `team_sweep({ preview: false })` with `team_close({ agents: [...] })` using the names from `team_overview`, and drop the preview call entirely — `team_close` already returns one `outcome` row per target, so a mistyped name costs one refused/unknown row, not a whole extra round-trip. `includeRunning` has no replacement: `team_close` accepts running members by name, but `team_overview` no longer offers them in `closable`.
+- The `parked` / `settled` residency vocabulary is gone from `team_overview` (see below); the `settled` / `resident` / `unobserved` counters went away with `team_sweep`.
+
+### Changed
+
+- **`team_overview` is a result view.** One row per member: `name [status]` + last words, where `status` is `running` | `done` | `failed` | `refused` | `aborted` | `idle` | `closed` | `unknown`. The gap it closes is real: `list_agents` reports `inactive`, and its own description warns that inactive "does not indicate task completion, success, or failure".
+- **The `lastWords` cache became a result cache.** `subagent/end` now records `{ stopReason, endedAt, excerpt, runId }` per member (256-entry FIFO, invalidated on restore, 100-char excerpt) instead of plain words. `stopReason` is projected as `completed→done`, `error→failed`, `max-tokens→failed`, `refusal→refused`, `aborted→aborted`; unknown backend variants project to `unknown` and are rendered verbatim (`[unknown: <reason>]`).
+- **`unknown` is preferred over a guessed `done`.** The cache is process-local, so it is lost on restart. A member with no record whose catalog row predates the plugin's start is `unknown`; only a row created while the plugin was watching may be `idle`.
+- **Archived wins.** An archived member reports `closed` and still shows its last recorded result (`result: done|failed|…`) and last words.
+- **`closable`** now lists the caller's finished-or-unobserved descendants, recorded outcomes first, and excludes running members (closing a running member is still possible by name).
+- **Every tool is gated by `when`.** A tool is declared only for an agent that can spawn subagents (a `subagent*` tool visible in its scope) or that owns the live subagent-tree root; a plain child receives no declarations and no hygiene nudge. Measured with `dsh-tools` 0.2.2-rc.5: `when` false excludes a tool from both declarations and dispatch, and `tools.get(name, scope, toolSet)` agrees — the hygiene context re-applies the gate because request-time context refresh carries no `toolSet`.
+- **Tool declarations shrank to ~1475 characters total** (from ~3200 for four tools), so a delegating agent pays about half the roster tokens.
+- Ordering fix in `team_close` / `team_restore`: the self and tree-root refusals are checked before the catalog lookup. The root is not a member of its own descendant list, so it used to be reported as `unknown` ("no such member") instead of `refused`.
+
+### Added
+
+- `test/smoke.mjs` grows to 158 checks: every status projection, the `unknown` scenarios (no record / archived with a historical result / unknown backend variant), `when` allow-and-deny paths, hygiene consistency with the visible tool set, the removed-tool sweep across shipped files, and a hard assertion that the three declarations stay ≤1500 characters.
 
 ## 1.1.5 — correctness, tokens, and a real test suite
 
@@ -22,7 +44,7 @@ All notable changes to `dsh-team-janitor`. Tool names and required parameters ha
 
 ### Changed
 
-- `lastWords` cache is bounded (256 entries, FIFO) and invalidated on restore, so a reopened member never shows the previous run's words as final.
+- The `lastWords` cache is bounded (256 entries, FIFO) and invalidated on restore, so a reopened member never shows the previous run's words as final.
 - `team_close` rows carry a structured `settled` boolean; `outcome` values are enumerated in the output schema.
 - `engines.dsh` is **not** declared, and the reason is worth recording: DSH's version gate compares that field against its package version (`0.2.2-rc.5` for the 44.7.0 build), not against the `44.7.0` product number. Declaring `>=44.7.0` made profiles refuse to load the plugin ("incompatible with dsh 0.2.2-rc.5 … profile startup denies it"). The supported build is documented instead.
 - Docs are precise about the archive set being **profile-global**: the Host view answers "is this session archived in this profile", the per-conversation scope belongs to the Web marker only. `workspaceRegistry` absence produces an explicit tool error rather than a silent no-op.

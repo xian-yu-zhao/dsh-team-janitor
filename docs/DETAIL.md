@@ -1,34 +1,58 @@
 # Team janitor
 
-让智能体自己决策清理用完的子代理。从 npm 安装（`plugin_manager install_bundle dsh-team-janitor`），或克隆本仓库后在 DSH 的 **Plugins → Add plugin** 选择文件夹；也支持先 `npm install dsh-team-janitor` 再装载其包目录。安装后，调用方（root 或任意子代理）会获得四个工具，全部只作用于**调用者自己的子树**：
+一句话：**只归档、不删除；可恢复；看得到子代理结束后的结果。**
+
+从 npm 安装（`plugin_manager install_bundle dsh-team-janitor`），或克隆本仓库后在 DSH 的 **Plugins → Add plugin** 选择文件夹（本地开发直接用 `link:D:\path\to\dsh-team-janitor`）。插件给调用方（树根或任意能派活的子代理）提供三个模型工具，全部只作用于**调用者自己的子树**：
 
 | 工具 | 作用 |
 |---|---|
-| `team_overview` | 紧凑花名册：每个成员标 `closed`（已归档）/ `running` / `parked`（在注册表中但无运行回合，可能仍占槽）/ `settled`（已出注册表，槽位已释放），附最近收尾发言（`lastWords:false` 可关掉）与 `closable` 列表（只含调用者自己可关的后代，parked 优先，settled 其后） |
-| `team_close` | 关闭指定后代（名字或 session id）：请求停止其运行中的工作、归档会话使其从侧边栏消失，整批只做一次结算轮询，逐条回报 `settled`（已释放槽位）/ `still resident`（可能仍占槽）/ `cancelled`（调用被取消、无法观测） |
-| `team_sweep` | 批量关闭闲置后代；默认 `preview=true` 只列候选，`preview=false` 才执行；`includeRunning=true` 连运行中的也关；失败逐条记入 `failuresDetail`，结算以 `settled` / `resident` / `unobserved` 计数回报 |
-| `team_restore` | 取消归档恢复可见与可继续对话；可选 `prompt` 在恢复后立即投递消息（恢复并继续，冷目标会重新占槽），不带 `prompt` 则只恢复可见性、不启动回合；不能恢复自己，一次性子代理不接受 `prompt` |
+| `team_overview` | 结果视图：每个成员一行「名字 + 状态 + 收尾原话」。状态为 `running` / `done` / `failed` / `refused` / `aborted` / `idle` / `closed` / `unknown`，另附 `closable`（调用者自己可关的后代，有结果的在前，运行中的不列）。`lastWords:false` 只要花名册与原话之外的信息 |
+| `team_close` | 关闭指定后代（名字或 session id）：归档会话（可逆，不删任何东西）+ 请求停止其运行中的工作及其后代；整批只做一次结算轮询，逐条回报 `outcome`（`closed` / `already-closed` / `duplicate` / `unknown` / `refused` / `cancelled` / `failed`）与 `settled`（`true` 已释放 / `false` 仍驻留） |
+| `team_restore` | 取消归档：恢复可见与可继续；可选 `prompt` 在恢复后立即投递（恢复并继续，冷目标会重新占槽）；一次性子代理不接受 `prompt` |
 
-## 特点
+`team_sweep` 在 2.0.0 被移除（与 `team_close` 重复，且「先预览再执行」多一次模型往返）：原来 `team_sweep({ preview:false })` 的用法改为 `team_close({ agents: [...] })`，名字取自 `team_overview`；预览调用可以整段删掉，因为 `team_close` 本来就会逐条回报 outcome，打错名字只是多一行 `unknown`/`refused`。
 
-- **模型工具**：四个由智能体自主调用的工具，清理动作无需用户逐个点停；
-- **可逆归档**：只归档不删除，`team_restore` 随时可反悔，还支持「恢复并继续」；
-- **状态总览**：`closed` / `running` / `parked` / `settled` 四态一目了然，并附成员收尾发言；
-- **零侵入**：不改宿主日志、不自建闸门、无 `@deepseek-ai` 依赖，卸载即恢复原状；
-- **子树限定**：所有工具只作用于调用者自己的后代，旁支、父级与树根不可触碰；
-- **lastwords**：通过 `subagent/end` 事件缓存每个成员的最后发言，辅助判断「是否真的用完了」；
-- **已清除标记**：网页端子代理目录下方红色「已清除」徽章标出已归档成员。
+## 结果视图：状态怎么投影
 
-## 状态语义
+状态按以下优先级判定（先命中先返回）：
 
-`team_overview` 的成员状态按 closed > running > parked > settled 判定：
+| 顺序 | 条件 | 状态 |
+|---|---|---|
+| 1 | 会话在归档集合 `archivedSessionIds` 里 | `closed`（仍带 `result:` 上次结果与收尾原话） |
+| 2 | `ctx.agents.get(id).status === 'running'`（无 `agents` 时退回目录条目的 `activity === 'running'`） | `running`（隐藏上一次运行的旧原话） |
+| 3 | 有 `subagent/end` 结果记录 | `done`（completed）/ `failed`（error、max-tokens）/ `refused`（refusal）/ `aborted`（aborted）；其它后端变体 → `unknown` |
+| 4 | 无记录，但目录条目 `createdAt` 晚于插件启动时刻 | `idle`（注册中、本进程内还没记到结果） |
+| 5 | 无记录，且条目早于插件启动时刻（或进程重启后） | `unknown` |
 
-- `closed`：会话在归档集合中（`archivedSessionIds` 命中），拒绝新模型步，直到 `team_restore`；
-- `running`：`ctx.agents.get(id).status === 'running'`，回合在跑；
-- `parked`：仍在注册表但无运行回合——成员可能仍驻留并占容量槽（如 inbox 停放着输入）；
-- `settled`：id 已不在注册表——激活被 dispose，槽位已释放；对其关闭只剩「把会话归档出侧边栏」的意义。
+**宁可报 `unknown`，不许把「没有记录」说成「已完成」。** 缓存是进程内的：DSH 重启、或插件加载前就已结束的成员，都无法回答「谁成功谁失败」，此时如实报 `unknown`。树根自己不是子代理运行，没有结果记录，因此显示 `idle` 或 `running`。
 
-`closable now` 先列 parked、再列 settled（不含 closed、调用者自身与树根）。
+原始 `stopReason` 会保留在输出的 JSON 里；当状态本身说不清时，渲染文本里也会写出来，例如 `[failed: max-tokens]`、`[unknown: transport-broke]`。已知取值来自 `@deepseek-ai/dsh-subagent` 的 `SubagentStopReasonMap`：`completed` / `aborted` / `error` / `max-tokens` / `refusal`（该联合类型可被后端扩展，所以未识别的取值一律 `unknown`）。
+
+## 结果缓存
+
+监听只读事件 `subagent/end`，按其 `SubagentRunEndInfo`（`{ runId, provider, parentSessionId, id, local, stopReason, lastAssistantMessage? }`）记录 `{ stopReason, endedAt, excerpt, runId }`：
+
+- 上限 256 条，FIFO 淘汰（长会话可能见上千次运行）；
+- `excerpt` 取 `lastAssistantMessage` 的文本、压平空白、截断到 100 字（成本分摊到每次调用）；
+- `team_restore` 成功后删除该成员的记录——上一次运行的结果不属于重开后的新回合；
+- 缓存只为花名册服务，异常一律吞掉，绝不打断事件分发。
+
+## 工具声明范围（`when`）
+
+三个工具都用 `tools.register(definition, { when })` 注册。`when(context)` 的放行条件：
+
+1. `subagents.rootOf(agent).id === agent.id` —— 它是这棵子代理树的根；或
+2. `tools.definitions(agent)` 里存在以 `subagent` 开头（`subagent` / `subagent_fork` / 自定义 `subagent_*`）的工具 —— 这一步它确实能派活。
+
+`ToolActivationContext` 只带 `{ agent, modelSelection, signal }`（核自 `dsh-tools/src/contracts.ts`），所以判定全部来自「活代理的 scope」。取不到 agent 时**放行**（模型步不会出现这种情况，而看不懂上下文时把工具藏起来更糟）。`rootOf` 抛错（无活的运行时所有者）时退回条件 2。
+
+已验证的宿主行为（`dsh-tools/src/index.ts`，0.2.2-rc.5）：
+
+- `when` 为假 → 「excludes it from both declarations and dispatch」：既不进本步 `schemas()`，也不可分发；
+- `tools.get(name, scope, toolSet)` 在给了本步 `toolSet` 时走 `toolSet.view(scope)`，**会**反映 `when` 结果；不给 `toolSet` 时走 `view(scope)`，只反映注册与限制，**不**反映 `when`；
+- 系统提示的动态上下文在装配时带 `toolSet`，但**请求期 `refreshContext` 不带**（`dsh-agent-loop/src/agent.ts` 只传 `assembleContextFor(this, signal)` 与 `modelSelection`）。因此 `team-janitor:hygiene` 的文本在「按 `tools.get` 过滤可见工具」之外，**再执行一次 `when` 的条件**，保证它宣传的工具模型一定调得到。
+
+三个工具发给模型的定义（名称 + 描述 + 参数，`{type:'function',function:{…}}` 序列化）合计约 **1475 字符**，由 `test/smoke.mjs` 的断言兜住（≤1500）。
 
 ## 关闭的语义
 
@@ -36,33 +60,35 @@
 
 1. `workspaceRegistry.archiveSession(childId, { stopActivity: true })` 写入持久归档；
 2. 会话自身的运行回合被取消（等价用户点停止），运行中的后代被以父因取消；
-3. 归档的会话从工作区侧边栏消失；`team_restore`（或用户在界面取消归档）可恢复；
-4. 后续模型步由 DSH 内置闸门拦截：DSH 44.7.0 起会话控制器会拒绝「自身会话已归档」成员的新模型步，子代理运行时的归档准入还会检查托管祖先——唤醒拦截由内置机制完成，插件不再自建闸门；
+3. 归档的会话从工作区视图消失；`team_restore`（或用户在界面取消归档）可恢复；
+4. 后续模型步由 DSH 内置闸门拦截：DSH 44.7.0 起会话控制器拒绝「自身会话已归档」成员的新模型步，子代理运行时的归档准入还会检查托管祖先——插件不自建闸门；
 5. 容量：正常完成的子代理由管理器自动结算并释放槽位，无需插件；归档改变的是活动与可见性，不改变结算保证——空闲成员的 inbox 若还停放着输入，归档后可能仍驻留占槽（DSH 没有公开的 dispose 或清空 inbox 的 API）；
-6. `team_close` 的结算确认：整批归档后**只做一次**轮询（约 2 秒预算、200ms 步长、尊重取消）——目标离开注册表则回报 `settled, slot released`，超时仍在则回报 `still resident — slot may be retained (parked inbox input)`，调用被取消则如实回报 `settlement not observed (call cancelled)`；`team_sweep` 以 `settled` / `resident` / `unobserved` 计数回报。`team_restore` 让成员重新驻留并重新占槽，带 `prompt` 时恢复后立即投递（投递失败不回滚恢复，只在 detail 中如实说明）。
+6. 结算确认：整批归档后**只做一次**轮询（约 2 秒预算、200ms 步长、尊重取消）——目标离开注册表则 `settled, slot released`，超时仍在则 `still resident — slot may be retained (parked inbox input)`，调用被取消则 `settlement not observed (call cancelled)`；没有 `agents` 服务时如实回报无法观测。
 
-关闭**不会删除历史**；归档可逆。`team_overview` 会把归档成员标为 `closed`，并展示成员最近一次收尾发言（来自 `subagent/end` 事件缓存，LRU 上限 256 条、恢复时清空），方便判断「是否真的用完了」。
+`team_restore` 让成员重新驻留并重新占槽，带 `prompt` 时恢复后立即投递（投递失败不回滚恢复，只在 detail 里说明）。子树判定严格排除调用者自身（不能关/恢复自己）与树根，且「自己 / 树根」检查在目录查找之前——树根不在自己的后代列表里，否则会被误报成 `unknown`。
 
-归档集合（`archivedSessionIds`）是**profile 全局**的：`team_overview` 回答的是「这个会话在本 profile 里是否已归档」，不是「本对话里是否已归档」；界面里手动取消归档、或另一个对话调用 `team_restore`，都会让 `closed` 在宿主视图里全局消失。按对话独立的是网页端标记（见下）。
+关闭**不会删除历史**：不删会话目录、不改会话日志、不写墓碑、不删数据库记录。名字不释放（Harness 规则），`list_agents` 的目录条目也永久保留（已关闭成员仍以 `inactive` 出现）。
+
+归档集合（`archivedSessionIds`）是**profile 全局**的：`team_overview` 回答的是「这个会话在本 profile 里是否已归档」。按对话独立的是网页端标记（见下）。
 
 ## Web 界面的「已清除」标记
 
-插件附带一个浏览器端模块（`client.js`，通过 `dsh.client` 声明）。在会话头部的子代理目录弹出菜单（后代计数触发的那个）中，树下方新增红色的**「已清除的子代理」**区块，列出会话 id 命中归档集合的目录条目：
+插件附带浏览器端模块（`client.js`，通过 `dsh.client` 声明）。在会话头部的子代理目录菜单中，树下方新增红色**「已清除的子代理」**区块：
 
-- 数据来自 Host 权威的 Workspace follow 流（客户端 `ctx.workspaces.list`），归档/取消归档实时反映：`team_close`、`team_sweep` 或用户在界面里手动取消归档都会即时生效；
-- 覆盖范围是**本对话自己的子树**：从当前会话的目录投影出发，只沿其已加载的子目录逐层下探，跨会话的已清除成员不会串进这个菜单；
-- 覆盖层级跟随目录树已加载的部分：与 lineage 渲染器读的是同一份 `subagentCatalog` 投影，展开某分支后其层级才会进入名单；
-- 菜单行本身在 DOM 上不带 session id、也没有行级扩展位（44.7.0 限制），因此官方认可的落点是根目录的 footer slot（与共享任务板同位）；根会话的目录菜单可见，子会话面包屑里不显示；
-- workspace 状态服务缺失时标记保持沉默，不做猜测。
+- 数据来自 Host 权威的 Workspace follow 流（客户端 `ctx.workspaces.list`），归档/取消归档（`team_close` / `team_restore` / 界面手动）实时反映；
+- 覆盖范围是**本对话自己的子树**：从当前会话的目录投影出发，只沿已加载的子目录逐层下探；
+- 覆盖层级跟随目录树已加载的部分（与 lineage 渲染器读同一份 `subagentCatalog` 投影）；
+- 菜单行在 DOM 上不带 session id、也没有行级扩展位（44.7.0 限制），因此落点是官方认可的根目录 footer slot；根会话的目录菜单可见，子会话面包屑里不显示。
 
 ## 已知限制
 
-- `list_agents` 基于父会话日志里的 catalog 条目，条目是永久的：已关闭的成员可能仍以 `inactive` 出现在其中。判断「谁已关闭」请用 `team_overview`。
-- 关闭不释放名字：名字在创建者的子代理目录里仍然占用（Harness 规则）。
-- 归档不强制释放容量：空闲成员若 inbox 里有停放输入，`team_close`/`team_sweep` 之后可能仍驻留占槽。
-- 需要宿主组合里有 `subagents`（含 `rootOf`/`listDescendants`/`resolveName`）与 `tools`；`workspaceRegistry` 缺失时插件照常加载，但三个关闭/恢复工具会返回明确的「服务不可用」错误、不碰任何会话。
-- `agents` 缺失时无法区分 `parked`/`settled`，也无法观测结算（一律按 parked 处理并如实说明）；`systemPrompt` 缺失时只是没有卫生提示。
-- `team_sweep` 的子树判定严格排除调用者自身与树根——早期版本把 owner 算进了子树，可能误关自己（1.1.5 修复）。
+- `list_agents` 只看驻留（`inactive` 不代表完成与否），且条目永久：判断「谁关闭了、谁成功、谁失败、谁拒答」请用 `team_overview`。
+- 结果缓存是进程内的：重启后所有成员都会先显示 `unknown`，直到它们再跑一次。
+- 归档不强制释放容量：空闲成员若 inbox 里有停放输入，关闭后可能仍驻留占槽。
+- 关闭不释放名字；会话历史不会被删除（这是设计，不是缺陷）。
+- 需要 `subagents`（含 `rootOf` / `listDescendants` / `resolveName`）与 `tools`；`workspaceRegistry` 缺失时插件照常加载，但关闭/恢复工具返回明确的「服务不可用」错误、不碰任何会话。
+- `agents` 缺失时 `running` 退回目录条目的 `activity`，且无法观测结算；`systemPrompt` 缺失时只是没有卫生提示。
+- `when` 只能按「本步能否派活 / 是否树根」收窄；达到 `maxDepth` 上限的子代理仍然能看到工具（上限只在调用 `subagent` 时报错），插件拿不到这个信息。
 
 ## 自检
 
@@ -70,8 +96,8 @@
 
 ```sh
 npm run check   # 两个半球做语法检查
-npm test        # 104 项断言，跑在假的 Cordis context 上
+npm test        # 158 项断言，跑在假的 Cordis context 上
 npm run verify  # 两者都跑
 ```
 
-`test/smoke.mjs` 覆盖：工具注册、四态判定、`closable` 范围（不含旁支与调用者）、结算结论（settled / still resident / cancelled）、重复引用去重、拒绝路径（自身、树根、旁支、未知名字、一次性子代理带 prompt）、恢复并继续，以及打包不变量（无 `@deepseek-ai` 导入、bundle 与网页半身清单、发布文件集）。CI 在 Node 20 / 22 上跑同一套。
+`test/smoke.mjs` 覆盖：工具注册（恰好三个、无 `team_sweep`）、每种 status 投影（done / failed / refused / aborted / closed 带历史结果 / idle / unknown / 未知后端变体 / 无 `agents` 时退回 `activity`）、`unknown` 的两种场景（无记录、重启语义）、`closable` 范围与排序、`when` 的放行与拒绝（树根 / 能派活 / 纯子代理 / 空上下文）、卫生提示与可见工具的一致性（含 `toolSet` 缺失的请求期刷新）、结算结论、去重、拒绝路径、恢复并继续、恢复后旧结果失效、声明预算 ≤1500 字符、以及打包不变量（无 `@deepseek-ai` 导入、bundle 与网页半身清单、发布文件集、宿主端不碰文件）。CI 在 Node 20 / 22 上跑同一套。
