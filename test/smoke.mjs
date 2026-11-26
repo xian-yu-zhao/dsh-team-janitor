@@ -13,13 +13,49 @@
  * Usage: node test/smoke.mjs   (npm test)
  */
 
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { apply, inject, name } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = join(here, '..')
+
+/* Every case gets its own DSH_HOME under the OS temp directory: the real
+   ~/.dsh/team-janitor/results.json is never touched, and one case cannot leak a
+   persisted record into another. */
+const TEMP_ROOT = mkdtempSync(join(tmpdir(), 'dsh-janitor-test-'))
+let homeSeq = 0
+
+/** Where the plugin will keep its results file for a given DSH home. */
+function resultsFileFor(home) {
+  return join(home, 'team-janitor', 'results.json')
+}
+
+/**
+ * Activate the plugin the way the host does — `apply(ctx, config)` — with
+ * DSH_HOME pointed at a throwaway directory, or at an explicit `dshHome` when
+ * one case has to share storage across two plugin instances (a simulated
+ * restart).
+ */
+function startPlugin(harness, { config, dshHome } = {}) {
+  const home = dshHome ?? join(TEMP_ROOT, `home-${homeSeq += 1}`)
+  const previous = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  try {
+    apply(harness.ctx, config)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previous
+  }
+  harness.dshHome = home
+  harness.resultsFile = resultsFileFor(home)
+  return harness
+}
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms) })
 
 let checks = 0
 let failures = 0
@@ -130,6 +166,7 @@ function makeContext({
   const promptContexts = []
   const handlers = new Map()
   const tools = new Map()
+  const warnings = []
 
   const subagents = {
     /* Mirrors the real service: only the live tree root resolves to itself. */
@@ -220,10 +257,10 @@ function makeContext({
       handlers.set(event, handler)
       return () => handlers.delete(event)
     },
-    logger: { warn: () => {} },
+    logger: { warn: (message) => warnings.push(String(message)) },
   }
 
-  return { ctx, tools, handlers, archiveCalls, unarchiveCalls, messages, promptContexts, archivedIds, agentMap, entries }
+  return { ctx, tools, handlers, archiveCalls, unarchiveCalls, messages, promptContexts, warnings, archivedIds, agentMap, entries }
 }
 
 const exec = (signal) => ({ agent: CALLER, signal })
@@ -244,12 +281,12 @@ const harness = makeContext({
   },
   archived: ['s-a5'],
 })
-apply(harness.ctx)
+startPlugin(harness)
 
 const EXPECTED_TOOLS = ['team_close', 'team_overview', 'team_restore']
 eq(harness.tools.size, EXPECTED_TOOLS.length, 'registers exactly three tools')
 for (const toolName of EXPECTED_TOOLS) ok(harness.tools.has(toolName), `registers ${toolName}`)
-ok(!harness.tools.has('team_sweep'), 'team_sweep is gone in 2.0.0')
+ok(!harness.tools.has('team_sweep'), 'team_sweep is gone (2.x)')
 for (const role of ['overview', 'close', 'restore']) {
   const definition = harness.tools.get(`team_${role}`)
   if (!definition) continue
@@ -286,7 +323,7 @@ for (const definition of [overviewTool, closeTool, restoreTool]) {
 /** A resident member whose runtime ownership resolves to the tree root, and
     whose scope keeps no delegation tool: the gate must stay closed. */
 const orphanGate = makeContext({ agents: {}, delegating: [ROOT_ID] })
-apply(orphanGate.ctx)
+startPlugin(orphanGate)
 const orphanCaller = { id: 's-a2' }
 eq(orphanGate.tools.get('team_overview').when({ agent: orphanCaller }), false,
   'a resident non-root member without a delegation tool is gated off')
@@ -348,7 +385,7 @@ ok(text.includes('last: “scan finished, 3 files changed”'), 'rendered rows c
 
 /* A variant stop reason nobody has seen yet must project to `unknown`. */
 const variantHarness = makeContext({ agents: { 's-a2': { status: 'idle' } } })
-apply(variantHarness.ctx)
+startPlugin(variantHarness)
 variantHarness.handlers.get('subagent/end')?.({ id: 's-a2', stopReason: 'transport-broke' })
 const variant = await variantHarness.tools.get('team_overview').execute({}, exec())
 const variantRow = variant.rows.find((row) => row.name === 'a-1/b-1')
@@ -359,7 +396,7 @@ ok(rendered(variantHarness.tools.get('team_overview'), variant).includes('[unkno
 
 /* Without the agents service, the catalog's `activity` is the only evidence. */
 const noAgents = makeContext({ withoutAgents: true, archived: ['s-a5'] })
-apply(noAgents.ctx)
+startPlugin(noAgents)
 const degraded = await noAgents.tools.get('team_overview').execute({}, exec())
 const degradedRows = new Map(degraded.rows.map((row) => [row.name, row]))
 eq(degradedRows.get('a-1/b-1')?.status, 'running', 'without agents the catalog activity decides running')
@@ -417,7 +454,7 @@ eq(typo.results[0].outcome, 'unknown', 'an unmatched name is diagnosed as unknow
 
 /* Closing a member that keeps its inbox parked: settlement says so. */
 const stubborn = makeContext({ agents: { 's-a2': { status: 'idle' } }, keepResident: true })
-apply(stubborn.ctx)
+startPlugin(stubborn)
 const stuck = await stubborn.tools.get('team_close').execute({ agents: ['a-1/b-1'] }, { agent: CALLER })
 eq(stuck.results[0].settled, false, 'still-resident member reports settled=false')
 ok(/still resident/.test(stuck.results[0].detail ?? ''), 'still-resident detail explains the slot risk')
@@ -507,11 +544,110 @@ for (const item of wire) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 9. packaging invariants                                             */
+/* 9. durable result store                                             */
+/* ------------------------------------------------------------------ */
+
+/* Every case below writes under TEMP_ROOT (via DSH_HOME); the real
+   ~/.dsh/team-janitor is never touched by this suite. */
+
+/* (a) one coalesced write covers a burst, and the file has the documented shape. */
+const writer = startPlugin(makeContext({ agents: { 's-a2': { status: 'idle' } } }))
+const writeEnd = writer.handlers.get('subagent/end')
+writeEnd?.({ id: 's-a2', runId: 'run-p1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'persisted words' }] })
+writeEnd?.({ id: 's-a7', runId: 'run-p2', stopReason: 'aborted' })
+writeEnd?.({ id: 's-a8', runId: 'run-p3', stopReason: 'refusal', lastAssistantMessage: [{ type: 'text', text: 'no' }] })
+await sleep(150)
+ok(!existsSync(writer.resultsFile), 'a burst inside the write window leaves no file yet (writes are coalesced)')
+await sleep(700)
+ok(existsSync(writer.resultsFile), 'the results file appears once the write window closes')
+const saved = JSON.parse(readFileSync(writer.resultsFile, 'utf8'))
+eq(saved.version, 1, 'the results file carries version 1')
+eq(typeof saved.updatedAt, 'number', 'the results file carries updatedAt')
+eq(Object.keys(saved.results).length, 3, 'one write covered all three runs')
+eq(saved.results['s-a2']?.stopReason, 'completed', 'stopReason is persisted')
+eq(saved.results['s-a2']?.excerpt, 'persisted words', 'last words are persisted')
+eq(saved.results['s-a2']?.runId, 'run-p1', 'runId is persisted')
+eq(typeof saved.results['s-a2']?.endedAt, 'number', 'endedAt is persisted')
+ok(!existsSync(`${writer.resultsFile}.tmp`), 'the atomic write leaves no temp file behind')
+
+/* (b) a simulated restart: a brand-new plugin instance reads the file back. */
+const restarted = startPlugin(
+  makeContext({ agents: { 's-a2': { status: 'idle' } } }),
+  { dshHome: writer.dshHome },
+)
+const reloaded = await restarted.tools.get('team_overview').execute({}, exec())
+const reloadedRows = new Map(reloaded.rows.map((row) => [row.name, row]))
+eq(reloadedRows.get('a-1/b-1')?.status, 'done', 'after a restart the persisted completed run still projects to done')
+eq(reloadedRows.get('a-1/b-1')?.last, 'persisted words', 'after a restart the persisted last words are still shown')
+eq(reloadedRows.get('a-1/f-1')?.status, 'aborted', 'after a restart the persisted aborted run projects to aborted')
+eq(reloadedRows.get('a-1/g-1')?.status, 'refused', 'after a restart the persisted refusal projects to refused')
+eq(reloadedRows.get('a-1')?.status, 'unknown', 'a member with no record anywhere is still unknown after a restart')
+ok(reloadedRows.get('a-1/b-1')?.status !== 'unknown',
+  'a persisted record beats watchingSince (a restart does not erase known results)')
+
+/* (c) a corrupt file never breaks activation: it is moved aside, cache empty. */
+const corruptHome = join(TEMP_ROOT, 'corrupt')
+mkdirSync(join(corruptHome, 'team-janitor'), { recursive: true })
+writeFileSync(resultsFileFor(corruptHome), '{ this is not json', 'utf8')
+const corrupt = startPlugin(makeContext({}), { dshHome: corruptHome })
+ok(corrupt.warnings.some((message) => /results\.json\.corrupt/.test(message)), 'a corrupt file produces one warning')
+ok(existsSync(`${corrupt.resultsFile}.corrupt`), 'the unreadable file is renamed to results.json.corrupt')
+const afterCorrupt = await corrupt.tools.get('team_overview').execute({}, exec())
+eq(afterCorrupt.rows.find((row) => row.name === 'a-1')?.status, 'unknown', 'a corrupt file leaves an empty cache')
+
+/* A wrong version is a shape problem, not a crash either. */
+const wrongVersionHome = join(TEMP_ROOT, 'wrong-version')
+mkdirSync(join(wrongVersionHome, 'team-janitor'), { recursive: true })
+writeFileSync(resultsFileFor(wrongVersionHome), JSON.stringify({ version: 99, results: {} }), 'utf8')
+const wrongVersion = startPlugin(makeContext({}), { dshHome: wrongVersionHome })
+ok(existsSync(`${wrongVersion.resultsFile}.corrupt`), 'an unexpected file version is quarantined too')
+
+/* (d) team_restore removes the record from the file, not just from memory. */
+const restoreHome = join(TEMP_ROOT, 'restore')
+mkdirSync(join(restoreHome, 'team-janitor'), { recursive: true })
+writeFileSync(resultsFileFor(restoreHome), JSON.stringify({
+  version: 1,
+  updatedAt: 1,
+  results: { 's-a5': { stopReason: 'completed', endedAt: 1, excerpt: 'old run' } },
+}), 'utf8')
+const restorer = startPlugin(makeContext({ archived: ['s-a5'] }), { dshHome: restoreHome })
+eq(JSON.parse(readFileSync(restorer.resultsFile, 'utf8')).results['s-a5']?.stopReason, 'completed',
+  'the seeded record is loaded from disk')
+const seeded = await restorer.tools.get('team_overview').execute({}, exec())
+eq(seeded.rows.find((row) => row.name === 'a-1/e-1')?.status, 'closed', 'the seeded member still reports closed')
+ok(rendered(restorer.tools.get('team_overview'), seeded).includes('result: done'),
+  'the seeded member still renders its persisted result')
+await restorer.tools.get('team_restore').execute({ agents: ['a-1/e-1'] }, exec())
+eq(JSON.parse(readFileSync(restorer.resultsFile, 'utf8')).results['s-a5'], undefined,
+  'restoring deletes the record from the file synchronously')
+
+/* (e) the file keeps the same 256-entry cap as the memory cache. */
+const capped = startPlugin(makeContext({}))
+const capEnd = capped.handlers.get('subagent/end')
+for (let index = 0; index < 300; index += 1) capEnd?.({ id: `s-gen-${index}`, stopReason: 'completed' })
+await sleep(800)
+const cappedFile = JSON.parse(readFileSync(capped.resultsFile, 'utf8'))
+eq(Object.keys(cappedFile.results).length, 256, 'the written file keeps the 256-entry cap')
+ok(cappedFile.results['s-gen-299'] !== undefined, 'the newest record survives the cap')
+ok(cappedFile.results['s-gen-0'] === undefined, 'the oldest record is evicted')
+
+/* (f) persistResults:false keeps everything in memory only. */
+const memoryOnly = startPlugin(makeContext({ agents: { 's-a8': { status: 'idle' } } }), { config: { persistResults: false } })
+memoryOnly.handlers.get('subagent/end')?.({ id: 's-a8', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: 'memory only' }] })
+await sleep(700)
+ok(!existsSync(memoryOnly.resultsFile), 'persistResults:false writes no file')
+const memoryView = await memoryOnly.tools.get('team_overview').execute({}, exec())
+eq(memoryView.rows.find((row) => row.name === 'a-1/g-1')?.status, 'done', 'persistResults:false still answers from memory')
+
+/* (g) the store lives in DSH_HOME, never inside the repository. */
+ok(!existsSync(join(repo, 'team-janitor')), 'the repository contains no store directory')
+
+/* ------------------------------------------------------------------ */
+/* 10. packaging invariants                                            */
 /* ------------------------------------------------------------------ */
 
 const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'))
-eq(pkg.version, '2.0.0', 'breaking release is versioned 2.0.0')
+eq(pkg.version, '2.1.0', 'the durable store ships as 2.1.0')
 eq(pkg.type, 'module', 'package is ESM')
 eq(pkg.dsh?.bundle?.patch, './cordis.patch.yml', 'bundle patch is declared')
 eq(pkg.dsh?.client?.platform, 'web', 'browser half targets the web platform')
@@ -537,7 +673,20 @@ for (const file of ['lib/index.js', 'client.js', 'package.json', 'locale/en.json
 const host = await readFile(join(repo, 'lib/index.js'), 'utf8')
 ok(/when:\s*\(context\)/.test(host), 'tools are registered with a when gate')
 ok(host.includes('archiveSession'), 'closing still goes through archiveSession')
-ok(!/rm\(|unlink\(|rmdir\(|writeFile/.test(host), 'the Host half never touches files')
+/* The Host half may write exactly one file: its own results mirror. */
+ok(/writeFileSync\(temp, payload\(map\)/.test(host), 'the only file write targets the store temp file')
+ok(/renameSync\(temp, file\)/.test(host), 'file writes are atomic (temp + rename)')
+ok(!/\brm\(|unlink\(|rmdir\(/.test(host), 'the Host half never deletes files')
+ok(!/session\.v4|sessions\//.test(host), 'the Host half never touches session logs')
+ok(!/(?:from\s*|require\()\s*['"]node:/.test(clientSource), 'client.js imports no Node built-in')
+ok(/(?:from\s*|import\()\s*['"]node:(?:fs|os|path)['"]/.test(host), 'the Host half may import Node built-ins')
+
+/* The only in-process timer must not keep the host alive. */
+ok(/timer\.unref\?\.\(\)/.test(host), 'the write timer is unref-ed')
+ok(!pkg.files?.some?.((entry) => /results\.json/.test(String(entry))), 'the package never ships a results file')
+
+/* Clean up the throwaway stores this run created. */
+rmSync(TEMP_ROOT, { recursive: true, force: true })
 
 /* ------------------------------------------------------------------ */
 

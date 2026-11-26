@@ -1,8 +1,8 @@
 {
   "name": "dsh-team-janitor",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
-  "description": "Result-aware team cleanup for DeepSeek Harness: a model-facing outcome view of the subagent tree (done / failed / refused / aborted + last words), reversible archiving (close / restore — nothing is deleted), subtree-scoped, only declared to agents that can delegate, plus a per-conversation red 'cleared' marker in the Web subagent menu.",
+  "description": "Result-aware team cleanup for DeepSeek Harness: a model-facing outcome view of the subagent tree (done / failed / refused / aborted + last words) whose records survive restarts in one small file of its own, reversible archiving (close / restore — nothing is deleted), subtree-scoped, only declared to agents that can delegate, plus a per-conversation red 'cleared' marker in the Web subagent menu.",
   "author": "xian-yu-zhao",
   "license": "MIT",
   "homepage": "https://github.com/xian-yu-zhao/dsh-team-janitor#readme",

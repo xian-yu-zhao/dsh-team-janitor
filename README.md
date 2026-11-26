@@ -14,9 +14,9 @@ Three gaps this plugin fills, model-side:
 
 1. **Closing must not be destructive.** `team_close` is `workspaceRegistry.archiveSession(id, { stopActivity: true })`: the run stops, later steps are blocked by DSH's built-in gates, and the durable session stays exactly where it was. No file, no session log, no database row is touched — the plugin has no delete path at all.
 2. **A closed member must be recoverable.** `team_restore` unarchives it; with `prompt` it is a restore-and-continue in a single call.
-3. **A finished run has an outcome nobody can read afterwards.** `list_agents` reports `inactive`, and its own description says that "does not indicate task completion, success, or failure". `team_overview` projects each member's `subagent/end` record (`stopReason` + the child's last assistant message) into `done` / `failed` / `refused` / `aborted`, and says `unknown` — never `done` — when the in-process cache cannot answer.
+3. **A finished run has an outcome nobody can read afterwards.** `list_agents` reports `inactive`, and its own description says that "does not indicate task completion, success, or failure". `team_overview` projects each member's `subagent/end` record (`stopReason` + the child's last assistant message) into `done` / `failed` / `refused` / `aborted`, and says `unknown` — never `done` — when there is no record in memory or on disk.
 
-**中文说明：** 三件事：关闭只归档、绝不删文件；归档可逆、可一步恢复并续跑；结束后有结果可言——`list_agents` 的 `inactive` 不代表完成与否，结果视图用 `subagent/end` 的 `stopReason` + 收尾原话回答；缓存是进程内的，查不到就如实报 `unknown`。
+**中文说明：** 三件事：关闭只归档、绝不删文件；归档可逆、可一步恢复并续跑；结束后有结果可言——`list_agents` 的 `inactive` 不代表完成与否，结果视图用 `subagent/end` 的 `stopReason` + 收尾原话回答，结果落盘所以重载/重启后还在；完全查不到记录才如实报 `unknown`。
 
 ## Install
 
@@ -32,11 +32,13 @@ npm install dsh-team-janitor
 |--------|----------------|-------|
 | npm / DSH plugin manager | `dsh-team-janitor` | Recommended; loads the bundle into the current profile |
 | GitHub or a local clone | `link:D:\path\to\dsh-team-janitor` | Repo checkout, no npm round-trip; re-install after editing |
-| A downloaded tarball | `file:C:\path\to\dsh-team-janitor-2.0.0.tgz` | Handy for offline machines |
+| A downloaded tarball | `file:C:\path\to\dsh-team-janitor-2.1.0.tgz` | Handy for offline machines |
 
 Or clone/download this repository and in DSH: **Plugins → Add plugin**, selecting the folder.
 
-**中文说明：** 首选 `plugin_manager install_bundle dsh-team-janitor`；本地开发用 `link:` 指向仓库目录，改完代码要完全退出并重启 DSH（没有热重载）。
+After editing a linked checkout you do **not** need a full restart: disabling and re-enabling the plugin (`plugin_manager set_plugin … enabled=false`, then `enabled=true`) re-imports the Host half. A full DSH restart works too.
+
+**中文说明：** 首选 `plugin_manager install_bundle dsh-team-janitor`；本地开发用 `link:` 指向仓库目录。改完代码用两种办法之一让它生效：在 **Plugins** 里把插件禁用再启用（`plugin_manager set_plugin`，等价热重载），或者完全退出并重启 DSH。
 
 ## Requirements
 
@@ -45,9 +47,10 @@ Or clone/download this repository and in DSH: **Plugins → Add plugin**, select
 - `agents` is optional: without it `running` falls back to the catalog's own `activity` field and settlement cannot be observed (reported as such).
 - `systemPrompt` is optional: without it there is simply no hygiene nudge.
 - Tools are declared only to an agent that can spawn subagents (a `subagent*` tool in its scope) or that owns the live subagent-tree root, and the three declarations together stay under 1500 characters.
+- Results are mirrored to `<DSH_HOME>/team-janitor/results.json` (`DSH_HOME` defaults to `~/.dsh`), so the roster still answers "how did it end?" after a restart. Set `persistResults: false` in the plugin config to keep results in memory only.
 - Targets DSH 44.7.0 / `@deepseek-ai/dsh-subagent` 0.2.2-rc.5. **No `engines.dsh`** on purpose: DSH compares that field against its *package* version (`0.2.2-rc.5` here), not the `44.7.0` product number, so declaring `>=44.7.0` makes profiles refuse to load the plugin.
 
-**中文说明：** 必需 `subagents` + `tools`；`workspaceRegistry` / `agents` / `systemPrompt` 都按可选处理并提供降级行为。刻意不写 `engines.dsh`——DSH 拿它跟包版本比而不是产品号。
+**中文说明：** 必需 `subagents` + `tools`；`workspaceRegistry` / `agents` / `systemPrompt` 都按可选处理并提供降级行为。结果默认落盘到 `<DSH_HOME>/team-janitor/results.json`，可用 `persistResults: false` 关掉。刻意不写 `engines.dsh`——DSH 拿它跟包版本比而不是产品号。
 
 ## Advantages
 
@@ -56,9 +59,10 @@ Or clone/download this repository and in DSH: **Plugins → Add plugin**, select
 | **Non-destructive close（只归档不删除）** | Closing archives; the plugin contains no delete path — not a file, not a log, not a row. |
 | **Reversible restore（可逆恢复）** | `team_restore` reopens a closed member, and `prompt` makes it restore-and-continue in one call. |
 | **Outcome view（结果视图）** | `done` / `failed` / `refused` / `aborted` per member — the question `list_agents`' `inactive` refuses to answer. |
-| **Honest unknown（宁可报 unknown）** | No cached record ⇒ `unknown`, never a guessed `done`: the cache is process-local and is lost on restart. |
+| **Honest unknown（宁可报 unknown）** | No record in memory or on disk ⇒ `unknown`, never a guessed `done`. |
+| **Durable results（结果落盘）** | Records survive a restart or a plugin reload in one small file the plugin owns; a corrupt file is quarantined instead of crashing the plugin. |
 | **Last words（收尾原话）** | Each recorded run keeps its final assistant excerpt (100 chars), so "is this one used up?" has evidence. |
-| **Token-gated（按需声明）** | A plain child never receives these declarations; the delegating agent pays ~1.5k characters, not 3.2k. |
+| **Token-gated（按需声明）** | A plain child never receives these declarations; the delegating agent pays ~1.5k characters instead of ~3.2k. Caveat: that gap exists only in a profile where a child cannot delegate — where children may nest, the saving is just the removed `team_sweep`. |
 | **Zero intrusion（零侵入）** | No `@deepseek-ai` imports, no host-log edits, no `agent/pre-step` gate, zero npm dependencies. |
 | **Subtree scoped（子树限定）** | Only the caller's own descendants: never a sibling, an ancestor, the root, or yourself. |
 
@@ -81,7 +85,7 @@ All tools act only on the **caller's own subtree**, are declared only to agents 
 | Tool | Effect |
 |------|--------|
 | `team_overview` | One row per member: `name [status]` + last words; `status` ∈ `running`, `done`, `failed`, `refused`, `aborted`, `idle`, `closed`, `unknown` (plus a read diagnostic's own reason). A raw `stopReason` that the status cannot express is rendered too (`[failed: max-tokens]`), archived rows still show `result: done/failed/…`, and `closable` lists your finished-or-unobserved descendants (used-up first, running excluded). `lastWords:false` gives names and outcomes only. |
-| `team_close` | Archive the named descendants (names from `team_overview`, or session ids): stop requested for their running work and their descendants, one settlement poll for the whole batch, one `outcome` per target (`closed` / `already-closed` / `duplicate` / `unknown` / `refused` / `cancelled` / `failed`) plus `settled` (`true` released, `false` still resident). |
+| `team_close` | Archive the named descendants (names from `team_overview`, or session ids): stop requested for their running work and their descendants, one settlement poll for the whole batch, one `outcome` per target (`closed` / `already-closed` / `duplicate` / `unknown` / `refused` / `cancelled` / `failed`) plus `settled` (`true` = no longer in the agents registry, `false` = still resident). |
 | `team_restore` | Unarchive closed members so they can take steps again; `prompt` delivers a message right after unarchiving (a cold target resumes and occupies a slot). One-shot children refuse a `prompt`. |
 
 **中文说明：** 三个工具都只作用于调用者自己的子树，只对「能派活或拥有树根」的代理声明。`team_overview` 用结果语义投影状态；`team_close` 是归档 + 一次结算轮询 + 逐条 outcome；`team_restore` 可带 `prompt` 一步恢复并续跑。
@@ -99,32 +103,33 @@ Competitors, as described on their own intro pages (介绍页，未读源码核�
 | Project | Deletes files | Rewrites the session log | Reversible | Reports the end reason | Dependencies |
 |---------|---------------|--------------------------|------------|------------------------|--------------|
 | `dsh-team-janitor` (this) | No — archive only | No | Yes, `team_restore` (optionally + `prompt`) | Yes — `done`/`failed`/`refused`/`aborted` + last words, `unknown` when unobserved | Zero npm deps, no `@deepseek-ai` imports |
-| `heiheiha798/dsh-plugin-subagent-delete` | Yes — deletes the session directory and the DB records | Deletes the records instead of rewriting | No | No | 据介绍页未说明（ships HTTP routes） |
-| `dogbotowo-oss/dsh-agent-manager` | Moves to a recycle bin | Yes — writes a tombstone into the session log | Via its recycle bin | No | 据介绍页未说明（Web panel + offline CLI） |
-| `SpaceRelay/dsh-subagent-control` | No | No | Not applicable | No — list / message / interrupt only | 据介绍页未说明 |
-| `REALOIYO/what-sub-agents-doing-now` | No | No | Not applicable | No — live self-report only, unreadable after settlement | 据介绍页未说明 |
+| `heiheiha798/dsh-plugin-subagent-delete` | Yes — deletes the session directory and the DB records | Deletes the records instead of rewriting | No | 介绍页未提及 | 据介绍页未说明（ships HTTP routes） |
+| `dogbotowo-oss/dsh-agent-manager` | Moves to a recycle bin | Yes — writes a tombstone into the session log | Via its recycle bin | 介绍页未提及 | 据介绍页未说明（Web panel + offline CLI） |
+| `SpaceRelay/dsh-subagent-control` | No | No | Not applicable | 介绍页未提及（只介绍了 list / message / interrupt） | 据介绍页未说明 |
+| `REALOIYO/what-sub-agents-doing-now` | No | No | Not applicable | 介绍页未提及（自述不报告终止原因，结算后读不到） | 据介绍页未说明 |
 
 Things to know before installing:
 
 1. `list_agents` still lists a closed member (catalog rows are permanent) as `inactive`; use `team_overview` for `closed`.
 2. Closing does not free the child's name — names stay reserved among the creator's children.
-3. The result cache is **process-local**: after a DSH restart, members with no record show `unknown` until they run again (say `unknown`, not `done`).
+3. Results are stored in `<DSH_HOME>/team-janitor/results.json` (`DSH_HOME` defaults to `~/.dsh`): per member the last run's `stopReason`, `endedAt`, `runId`, and a **100-character excerpt of that member's final reply**. That file is what keeps `team_overview` useful after a restart; a member with no record there and none in memory is `unknown`. **Uninstalling the plugin does not delete this file** — delete it yourself if you do not want those excerpts kept. `persistResults: false` in the plugin config keeps everything in memory only.
 4. The archive set is **profile-global**: `team_overview` answers "archived in this profile", not "in this conversation"; the per-conversation scope belongs to the Web marker.
 5. Archiving does not force-free capacity: a member with parked inbox input may stay resident after closing (no public dispose / inbox-clear API).
 
-**中文说明：** 对比表只写介绍页能确认的内容，未说明的标「未说明」。五条必须知道的限制：`list_agents` 仍显示已关闭成员、名字不释放、结果缓存随进程重启丢失、归档集合是 profile 全局、归档不保证释放容量。
+**中文说明：** 对比表只写介绍页能确认的内容，未说明的标「未说明」。五条必须知道的限制：`list_agents` 仍显示已关闭成员、名字不释放、结果落盘到 `<DSH_HOME>/team-janitor/results.json`（里面有每个成员最后一条回复的前 100 字，卸载插件不会自动删除，可用 `persistResults: false` 只留内存）、归档集合是 profile 全局、归档不保证释放容量。
 
 ## Deep mechanics
 
-Closing is `archiveSession(id, { stopActivity: true })` → the registry writes a durable archive and requests a stop of the session's own turn plus running descendants; wake-up blocking is DSH's built-in session gate (self-archived + managed-ancestor admission), so the plugin adds no gate. Results come from the **observe-only** `subagent/end` event (`{ runId, id, stopReason, lastAssistantMessage }`), cached in a 256-entry FIFO and invalidated on restore; `stopReason` is `completed | aborted | error | max-tokens | refusal` (merge-extensible), and anything else projects to `unknown`. The `when` gate is evaluated per model step from the live agent (`tools.resolve`), and the hygiene sentence re-applies it because request-time context refresh carries no `toolSet`. Full detail — status table, settlement semantics, gate evidence, limits — lives in [docs/DETAIL.md](docs/DETAIL.md); the zero-dependency test suite runs with `npm run verify` (158 checks).
+Closing is `archiveSession(id, { stopActivity: true })` → the registry writes a durable archive and requests a stop of the session's own turn plus running descendants; wake-up blocking is DSH's built-in session gate (self-archived + managed-ancestor admission), so the plugin adds no gate. Results come from the **observe-only** `subagent/end` event (`{ runId, id, stopReason, lastAssistantMessage }`), held in a 256-entry FIFO cache, mirrored to `<DSH_HOME>/team-janitor/results.json` (atomic temp+rename, ~500ms coalesced writes, corrupt files quarantined to `results.json.corrupt`) and invalidated on restore; `stopReason` is `completed | aborted | error | max-tokens | refusal` (merge-extensible), and anything else projects to `unknown`. The `when` gate is evaluated per model step from the live agent (`tools.resolve`), and the hygiene sentence re-applies it because request-time context refresh carries no `toolSet`. Full detail — status table, store format, settlement semantics, gate evidence, limits — lives in [docs/DETAIL.md](docs/DETAIL.md); the zero-dependency test suite runs with `npm run verify` (195 checks).
 
-**中文说明：** 归档 + 内置闸门、`subagent/end` 观察式结果缓存（256 条 FIFO、恢复即失效）、`when` 按步骤求值且提示语二次复检——细节与自检说明见 [docs/DETAIL.md](docs/DETAIL.md)。
+**中文说明：** 归档 + 内置闸门、`subagent/end` 观察式结果缓存（256 条 FIFO、落盘到 `<DSH_HOME>/team-janitor/results.json`、恢复即失效、损坏文件改名隔离）、`when` 按步骤求值且提示语二次复检——细节与自检说明见 [docs/DETAIL.md](docs/DETAIL.md)。
 
 ## Changelog
 
 Full history: [CHANGELOG.md](CHANGELOG.md).
 
-- **2.0.0** — **Breaking:** `team_sweep` removed (use `team_close`). `team_overview` is now a result view (`done`/`failed`/`refused`/`aborted`/`idle`/`closed`/`unknown`) built from a `subagent/end` result cache instead of residency. All three tools are gated by `when` (only delegating agents and the tree root), and the three declarations fit in ~1.5k characters. Docs rewritten around "archive, don't delete".
+- **2.1.0** — Results now survive a restart: the cache is mirrored to `<DSH_HOME>/team-janitor/results.json` (atomic writes, ~500ms coalescing, corrupt files quarantined), so a reloaded plugin still reports `done`/`failed`/`refused`/`aborted` instead of `unknown`. Opt out with `persistResults: false`. Wording fixes: `team_close` no longer says "slot released" (closing does not free capacity), and the competitor table marks unverified cells as 介绍页未提及.
+- **2.0.0** — **Breaking:** `team_sweep` removed (use `team_close`). `team_overview` is now a result view (`done`/`failed`/`refused`/`aborted`/`idle`/`closed`/`unknown`) built from a `subagent/end` result cache instead of residency (2.1.0 made that cache durable). All three tools are gated by `when` (only delegating agents and the tree root), and the three declarations fit in ~1.5k characters. Docs rewritten around "archive, don't delete".
 - **1.1.5** — Correctness pass + a real test suite: fixed a `team_sweep` that could close the caller, sibling rows in `closable`, self-restore, `prompt` on one-shot children, and cancellation reported as a verdict; one settlement poll per call.
 - **1.1.4** — `parked` vs `settled`, settlement polling, per-failure rows, restore-and-continue, and the red **已清除** roster in the Web subagent menu.
 - **1.1.3** — Target DSH 44.7.0; dropped the plugin's own `agent/pre-step` gate; no more slot promises.

@@ -2,6 +2,29 @@
 
 All notable changes to `dsh-team-janitor`. 2.0.0 is the first release that changes the tool surface: `team_sweep` is gone.
 
+## 2.1.0 — results survive a restart
+
+### Added
+
+- **The result cache is mirrored to disk.** `<DSH_HOME>/team-janitor/results.json` (`DSH_HOME` first, `~/.dsh` otherwise) holds `{ version: 1, updatedAt, results: { "<member id>": { stopReason, endedAt, excerpt, runId } } }`. The plugin reads it once at activation and merges it into the in-memory cache, so a restarted or reloaded plugin still answers `done` / `failed` / `refused` / `aborted` / `closed` with last words instead of falling back to `unknown`.
+  - Writes are atomic (`results.json.tmp` → `rename`), coalesced into one ~500ms window per burst, capped at the same 256 newest records as memory, flushed right away by `team_restore` (which deletes a record), and flushed on plugin unload. The write timer is `unref`-ed so it never keeps the host alive.
+  - A file that is not valid JSON, carries another `version`, or has the wrong shape is renamed to `results.json.corrupt`, one warning is logged, and the plugin starts with an empty cache — activation never fails on a bad file. Read/write errors (permissions, full disk) log and leave the in-memory cache working.
+- **`persistResults` (default `true`)** — set it to `false` in the plugin config to keep results in memory only. It is read from `apply(ctx, config)`; the plugin declares no `Config` schema because a schema requires `@deepseek-ai/schemastery`, which the no-`@deepseek-ai` rule forbids. DSH's loader passes the raw patch config through when no schema exists, so the value works from `cordis.patch.yml` / the profile patch — but there is no rendered form field for it.
+
+### Changed
+
+- `unknown` now means "no record in memory **and** none on disk". A member the plugin has never seen (it ended before the plugin first ran) still projects to `unknown`; anything with a record projects from its `stopReason`.
+- `team_overview`'s description says so: `unknown` = no record in memory or on disk, saved results survive restarts (declarations stay within the 1500-character budget: 1486).
+- `team_close` no longer appends "slot released" to a `settled` row. A member usually releases its slot when it finishes, long before it is closed, so the phrase implied that closing frees concurrency. The row now says `settled`, and the `settled` field keeps its meaning: the target is no longer in the agents registry.
+- Privacy is documented: the results file stores a 100-character excerpt of each member's final reply, and **uninstalling the plugin does not delete it**.
+- The competitor table now marks unverified cells as 介绍页未提及 instead of a bare `No` (the same convention its Dependencies column already used).
+- The "Token-gated" advantage is qualified: the saved declarations only exist in profiles where a child cannot delegate; where children may nest, the saving is just the removed `team_sweep`.
+- Install docs mention both reload paths: disable + re-enable the plugin (`plugin_manager set_plugin`) re-imports the Host half, and a full DSH restart works too.
+
+### Testing
+
+- `test/smoke.mjs` grows to 195 checks. New: a coalesced write with the documented file shape; a simulated restart reading the file back (persisted `done` / `aborted` / `refused`, and `unknown` only where no record exists); corrupt and wrong-version files quarantined without failing activation; `team_restore` deleting the record from the file; the 256-entry cap on disk; `persistResults:false` writing nothing. Every case runs under an OS temp directory (`DSH_HOME` is injected per harness), so the real `~/.dsh/team-janitor` is never touched. Packaging assertions also pin "one file write only, atomic, never deletes, no session-log access, no `node:` import in `client.js`".
+
 ## 2.0.0 — results instead of residency (breaking)
 
 ### Removed
